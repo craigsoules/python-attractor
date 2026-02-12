@@ -1,0 +1,43 @@
+// Example Attractor pipeline: generate and validate a Python function
+digraph hello_pipeline {
+
+    graph [
+        goal = "Generate a well-tested Python function that checks if a number is prime",
+        label = "Hello Attractor"
+    ];
+
+    // Start node
+    start [shape = Mdiamond, label = "Begin"];
+
+    // Stage 1: Generate the function
+    generate [
+        shape = box,
+        label = "Generate prime checker",
+        prompt = "Write a Python function called is_prime(n) that returns True if n is prime. Include type hints and a docstring. Goal: $goal"
+    ];
+
+    // Stage 2: Generate tests
+    write_tests [
+        shape = box,
+        label = "Write tests",
+        prompt = "Write pytest tests for the is_prime function generated in the previous stage. Cover edge cases: 0, 1, 2, negative numbers, large primes, and composites."
+    ];
+
+    // Stage 3: Validate
+    validate [
+        shape = diamond,
+        label = "Check quality",
+        goal_gate = true,
+        retry_target = "generate"
+    ];
+
+    // Exit
+    done [shape = Msquare, label = "Done"];
+
+    // Edges
+    start -> generate;
+    generate -> write_tests;
+    write_tests -> validate;
+    validate -> done [condition = "outcome=success"];
+    validate -> generate [condition = "outcome=fail", label = "retry"];
+}

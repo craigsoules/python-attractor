@@ -1,0 +1,9 @@
+keys
+keys~
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+logs/
+count_files/
+.env
