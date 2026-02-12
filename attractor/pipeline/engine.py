@@ -7,6 +7,7 @@ import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from attractor.pipeline.conditions import ConditionParser
@@ -18,8 +19,13 @@ from attractor.pipeline.stylesheet import StylesheetApplier
 class PipelineEngine:
     """Execute a DOT pipeline graph from start to exit."""
 
-    def __init__(self, registry: HandlerRegistry) -> None:
+    def __init__(
+        self,
+        registry: HandlerRegistry,
+        on_stage_complete: Callable[[Node, Outcome, Context], None] | None = None,
+    ) -> None:
         self.registry = registry
+        self.on_stage_complete = on_stage_complete
         self.condition_parser = ConditionParser()
 
     def run(self, graph: Graph, logs_root: str = "./logs") -> Outcome:
@@ -75,6 +81,10 @@ class PipelineEngine:
             response_val = context.get(response_key)
             if response_val is not None:
                 context.set(f"stage.{node.id}.iter_{visit}.response", response_val)
+
+            # Notify caller
+            if self.on_stage_complete:
+                self.on_stage_complete(node, outcome, context)
 
             # Checkpoint
             self._checkpoint(logs_root, context, current, completed, node_retries)

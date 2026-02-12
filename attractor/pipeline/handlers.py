@@ -80,7 +80,10 @@ class ExitHandler(Handler):
 
 class ConditionalHandler(Handler):
     def execute(self, node: Node, context: Context, graph: Graph, logs_root: str) -> Outcome:
-        return Outcome(status=StageStatus.SUCCESS, notes=f"Conditional: {node.id}")
+        prev = context.get("outcome", "success")
+        status = StageStatus(prev) if prev else StageStatus.SUCCESS
+        preferred = context.get("preferred_label", "") or ""
+        return Outcome(status=status, preferred_label=preferred, notes=f"Conditional: {node.id}")
 
 
 class CodergenHandler(Handler):
@@ -224,8 +227,14 @@ class ToolHandler(Handler):
         if not tool_fn:
             return Outcome(status=StageStatus.FAIL, failure_reason=f"Unknown tool: {tool_name}")
 
+        # Resolve input from explicit source or fall back to previous stage
+        source_stage = node.attributes.get("source", "") or context.get("last_stage", "")
+        previous_output = ""
+        if source_stage:
+            previous_output = context.get(f"stage.{source_stage}.response") or ""
+
         try:
-            success, result_text = tool_fn(node, context)
+            success, result_text = tool_fn(node, context, previous_output)
         except Exception as exc:
             return Outcome(status=StageStatus.FAIL, failure_reason=str(exc))
 
@@ -242,19 +251,11 @@ class ToolHandler(Handler):
         )
 
     @staticmethod
-    def _validate_dot(node: Node, context: Context) -> tuple[bool, str]:
+    def _validate_dot(node: Node, context: Context, previous_output: str) -> tuple[bool, str]:
         from attractor.pipeline.parser import DotParser
         from attractor.pipeline.validation import Severity, Validator
 
-        dot_text = context.get("last_response", "")
-        # Try to find full DOT content from the most recent stage response
-        snapshot = context.snapshot()
-        for key in sorted(snapshot.keys(), reverse=True):
-            if key.startswith("stage.") and key.endswith(".response"):
-                val = str(snapshot[key])
-                if "digraph" in val:
-                    dot_text = val
-                    break
+        dot_text = previous_output
 
         if not dot_text or "digraph" not in dot_text:
             return False, "No DOT content found in context to validate."
@@ -284,7 +285,7 @@ class ToolHandler(Handler):
         return True, "Valid: no errors or warnings."
 
     @staticmethod
-    def _write_file(node: Node, context: Context) -> tuple[bool, str]:
+    def _write_file(node: Node, context: Context, previous_output: str) -> tuple[bool, str]:
         path = node.attributes.get("path", "")
         if not path:
             # Try to derive from context
@@ -292,20 +293,12 @@ class ToolHandler(Handler):
         if not path:
             return False, "No 'path' attribute on node and no 'output_path' in context."
 
-        # Find the most recent DOT content
-        content = ""
-        snapshot = context.snapshot()
-        for key in sorted(snapshot.keys(), reverse=True):
-            if key.startswith("stage.") and key.endswith(".response"):
-                val = str(snapshot[key])
-                if "digraph" in val:
-                    content = val
-                    break
+        content = previous_output
 
         if not content:
             return False, "No content found to write."
 
-        # Extract DOT block if embedded
+        # Extract DOT block if embedded in markdown or other text
         import re
         match = re.search(r"(digraph\s+\w+\s*\{.*\})", content, re.DOTALL)
         if match:
@@ -318,7 +311,7 @@ class ToolHandler(Handler):
         return True, f"Written to {path}"
 
     @staticmethod
-    def _read_file(node: Node, context: Context) -> tuple[bool, str]:
+    def _read_file(node: Node, context: Context, previous_output: str) -> tuple[bool, str]:
         path = node.attributes.get("path", "")
         if not path:
             return False, "No 'path' attribute on node."

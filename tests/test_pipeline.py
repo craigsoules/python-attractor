@@ -333,7 +333,7 @@ INVALID_DOT = '''digraph bad {
 
 def test_tool_handler_validate_dot_success():
     handler = ToolHandler()
-    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot"})
+    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot", "source": "generate_dot"})
     ctx = Context()
     ctx.set("stage.generate_dot.response", VALID_DOT)
     graph = Graph(name="test")
@@ -343,7 +343,7 @@ def test_tool_handler_validate_dot_success():
 
 def test_tool_handler_validate_dot_failure():
     handler = ToolHandler()
-    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot"})
+    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot", "source": "generate_dot"})
     ctx = Context()
     ctx.set("stage.generate_dot.response", INVALID_DOT)
     graph = Graph(name="test")
@@ -365,7 +365,7 @@ def test_tool_handler_write_file():
     handler = ToolHandler()
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "output.dot")
-        node = Node(id="write", shape="parallelogram", attributes={"tool": "write_file", "path": path})
+        node = Node(id="write", shape="parallelogram", attributes={"tool": "write_file", "path": path, "source": "generate_dot"})
         ctx = Context()
         ctx.set("stage.generate_dot.response", VALID_DOT)
         graph = Graph(name="test")
@@ -397,6 +397,31 @@ def test_tool_handler_read_file_not_found():
     graph = Graph(name="test")
     outcome = handler.execute(node, ctx, graph, "/tmp")
     assert outcome.status == StageStatus.FAIL
+
+
+def test_tool_handler_source_fallback_to_last_stage():
+    """Without a source attribute, tool reads from last_stage."""
+    handler = ToolHandler()
+    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot"})
+    ctx = Context()
+    ctx.set("stage.generate_dot.response", VALID_DOT)
+    ctx.set("last_stage", "generate_dot")
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.SUCCESS
+
+
+def test_tool_handler_source_overrides_last_stage():
+    """Explicit source attribute takes priority over last_stage."""
+    handler = ToolHandler()
+    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot", "source": "generate_dot"})
+    ctx = Context()
+    ctx.set("stage.generate_dot.response", VALID_DOT)
+    ctx.set("stage.other.response", "not a digraph")
+    ctx.set("last_stage", "other")
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.SUCCESS
 
 
 def test_tool_handler_unknown_tool():

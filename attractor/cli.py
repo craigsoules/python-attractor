@@ -11,6 +11,7 @@ from attractor.pipeline.parser import DotParser
 from attractor.pipeline.validation import Validator, Severity
 from attractor.pipeline.handlers import create_default_handler_registry
 from attractor.pipeline.engine import PipelineEngine
+from attractor.pipeline.graph import Context, Node, Outcome, StageStatus
 from attractor.pipeline.interviewer import AutoApproveInterviewer, ConsoleInterviewer
 
 
@@ -53,7 +54,18 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
     # Run
     logs_root = args.logs or "./logs"
-    engine = PipelineEngine(registry)
+
+    def _print_stage_output(node: Node, outcome: Outcome, context: Context) -> None:
+        if node.shape in ("Mdiamond", "Msquare"):
+            return
+        label = node.label or node.id
+        status = outcome.status.value
+        print(f"\n  [{label}] {status}")
+        response = context.get(f"stage.{node.id}.response")
+        if response and len(str(response)) > 20:
+            print(f"  {response}")
+
+    engine = PipelineEngine(registry, on_stage_complete=_print_stage_output)
     print(f"\nRunning pipeline '{graph.name}' ...")
     try:
         outcome = engine.run(graph, logs_root=logs_root)

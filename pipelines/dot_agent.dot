@@ -34,7 +34,8 @@ digraph dot_agent {
     validate [
         shape = parallelogram,
         label = "Validate DOT",
-        tool = "validate_dot"
+        tool = "validate_dot",
+        source = "generate_dot"
     ];
 
     route [
@@ -63,7 +64,8 @@ digraph dot_agent {
         shape = parallelogram,
         label = "Write pipeline file",
         tool = "write_file",
-        path = "output.dot"
+        path = "output.dot",
+        source = "generate_dot"
     ];
 
     exit [shape = Msquare, label = "Done"];
