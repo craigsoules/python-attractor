@@ -21,10 +21,9 @@ dev = [
 
 [project.scripts]
 attractor = "attractor.cli:main"
-dot-agent = "dot_agent.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["attractor*", "dot_agent*"]
+include = ["attractor*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

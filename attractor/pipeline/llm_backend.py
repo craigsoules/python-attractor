@@ -72,20 +72,44 @@ class LLMBackend:
 
     @staticmethod
     def _build_prior_context(context: Context) -> str:
-        """Gather output from prior stages stored in context."""
-        parts: list[str] = []
+        """Gather output from prior stages stored in context.
+
+        When iteration keys (stage.X.iter_N.response) exist, builds a
+        chronological conversation history across loop iterations.
+        Falls back to plain stage.X.response keys for non-loop pipelines.
+        """
+        import re
+
         snapshot = context.snapshot()
+        parts: list[str] = []
 
-        # Collect last_response entries (keyed by stage name)
-        for key, value in sorted(snapshot.items()):
-            if key.startswith("stage.") and key.endswith(".response"):
-                stage = key.removeprefix("stage.").removesuffix(".response")
-                parts.append(f"## Stage: {stage}\n{value}")
+        # Check for iteration-indexed keys
+        iter_pattern = re.compile(r"^stage\.(.+?)\.iter_(\d+)\.response$")
+        iter_entries: list[tuple[int, str, str]] = []
+        for key, value in snapshot.items():
+            m = iter_pattern.match(key)
+            if m:
+                stage_name = m.group(1)
+                iteration = int(m.group(2))
+                iter_entries.append((iteration, stage_name, str(value)))
 
-        # Also include the rolling last_response if present
-        last_stage = snapshot.get("last_stage")
-        last_resp = snapshot.get("last_response")
-        if last_stage and last_resp and not parts:
-            parts.append(f"## Stage: {last_stage}\n{last_resp}")
+        if iter_entries:
+            # Sort by iteration number, then by stage name for determinism
+            iter_entries.sort(key=lambda e: (e[0], e[1]))
+            for iteration, stage_name, value in iter_entries:
+                parts.append(f"## Stage: {stage_name} (iteration {iteration})\n{value}")
+        else:
+            # Non-loop fallback: plain stage.X.response keys
+            for key, value in sorted(snapshot.items()):
+                if key.startswith("stage.") and key.endswith(".response"):
+                    stage = key.removeprefix("stage.").removesuffix(".response")
+                    parts.append(f"## Stage: {stage}\n{value}")
+
+        # Also include the rolling last_response if nothing else found
+        if not parts:
+            last_stage = snapshot.get("last_stage")
+            last_resp = snapshot.get("last_response")
+            if last_stage and last_resp:
+                parts.append(f"## Stage: {last_stage}\n{last_resp}")
 
         return "\n\n".join(parts)

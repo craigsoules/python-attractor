@@ -1,0 +1,94 @@
+digraph dot_agent {
+
+    graph [
+        goal = "Help the user design and build a valid Attractor DOT pipeline file.",
+        label = "DOT Pipeline Builder Agent",
+        default_max_retry = 3
+    ];
+
+    // ---------------------------------------------------------------
+    // Nodes
+    // ---------------------------------------------------------------
+
+    start [shape = Mdiamond, label = "Begin"];
+
+    load_spec [
+        shape = parallelogram,
+        label = "Load DOT spec",
+        tool = "read_file",
+        path = "DOT_SPEC.md"
+    ];
+
+    get_input [
+        shape = hexagon,
+        type = "wait.human.freeform",
+        label = "Describe the pipeline you want to build, or refine the current one:"
+    ];
+
+    generate_dot [
+        shape = box,
+        label = "Generate DOT pipeline",
+        prompt = "You are a pipeline architect. Generate or refine a valid Attractor DOT pipeline based on the user request and conversation history above. The DOT Pipeline Specification was loaded in a prior stage — follow it exactly. Rules: (1) Output ONLY the raw DOT content starting with digraph, no markdown fencing. (2) Every pipeline needs exactly one start node (shape=Mdiamond) and at least one exit node (shape=Msquare). (3) All nodes must be reachable from start. (4) LLM nodes (shape=box) need a prompt attribute. (5) Use $goal for graph-level goal references. (6) If validation failed, fix the reported issues."
+    ];
+
+    validate [
+        shape = parallelogram,
+        label = "Validate DOT",
+        tool = "validate_dot"
+    ];
+
+    route [
+        shape = diamond,
+        label = "Check validation"
+    ];
+
+    summarize [
+        shape = box,
+        label = "Summarize pipeline",
+        prompt = "Summarize the pipeline you just generated. Describe each node, the edges between them, and the overall flow in plain English. Be concise but thorough."
+    ];
+
+    review [
+        shape = hexagon,
+        type = "wait.human.freeform",
+        label = "Review the pipeline above. Type done to accept and write the file, or describe what you would like to change:"
+    ];
+
+    review_route [
+        shape = diamond,
+        label = "Review decision"
+    ];
+
+    write_output [
+        shape = parallelogram,
+        label = "Write pipeline file",
+        tool = "write_file",
+        path = "output.dot"
+    ];
+
+    exit [shape = Msquare, label = "Done"];
+
+    // ---------------------------------------------------------------
+    // Edges
+    // ---------------------------------------------------------------
+
+    start -> load_spec;
+    load_spec -> get_input;
+    get_input -> generate_dot;
+
+    generate_dot -> validate;
+    validate -> route;
+
+    // Validation routing
+    route -> generate_dot [condition = "outcome=fail", label = "fix", weight = 10];
+    route -> summarize    [condition = "outcome=success"];
+
+    summarize -> review;
+
+    // Review routing
+    review -> review_route;
+    review_route -> write_output [condition = "preferred_label=done", label = "done"];
+    review_route -> get_input    [label = "revise"];
+
+    write_output -> exit;
+}

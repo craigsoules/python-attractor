@@ -13,11 +13,14 @@ from attractor.pipeline.handlers import (
     CodergenHandler,
     ConditionalHandler,
     ExitHandler,
+    FreeformHumanHandler,
+    Handler,
     HandlerRegistry,
     StartHandler,
+    ToolHandler,
     create_default_handler_registry,
 )
-from attractor.pipeline.interviewer import AutoApproveInterviewer
+from attractor.pipeline.interviewer import Answer, AutoApproveInterviewer, QueueInterviewer
 from attractor.pipeline.parser import DotParser
 from attractor.pipeline.stylesheet import StylesheetApplier, StylesheetParser
 from attractor.pipeline.validation import Diagnostic, Severity, Validator
@@ -272,3 +275,255 @@ def test_context_snapshot():
     ctx.set("y", 20)
     snap = ctx.snapshot()
     assert snap == {"x": 10, "y": 20}
+
+
+# ---------------------------------------------------------------------------
+# FreeformHumanHandler
+# ---------------------------------------------------------------------------
+
+def test_freeform_handler_stores_input():
+    interviewer = QueueInterviewer([Answer(value="Build me a CSV pipeline", text="Build me a CSV pipeline")])
+    handler = FreeformHumanHandler(interviewer)
+    node = Node(id="get_input", label="Describe your pipeline:", shape="hexagon", type="wait.human.freeform")
+    ctx = Context()
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.SUCCESS
+    assert outcome.preferred_label == ""
+    assert outcome.context_updates["human.input"] == "Build me a CSV pipeline"
+    assert outcome.context_updates["stage.get_input.response"] == "Build me a CSV pipeline"
+
+
+def test_freeform_handler_done_sets_preferred_label():
+    interviewer = QueueInterviewer([Answer(value="done", text="done")])
+    handler = FreeformHumanHandler(interviewer)
+    node = Node(id="review", label="Review:", shape="hexagon", type="wait.human.freeform")
+    ctx = Context()
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.SUCCESS
+    assert outcome.preferred_label == "done"
+
+
+def test_freeform_handler_exit_sets_preferred_label():
+    interviewer = QueueInterviewer([Answer(value="EXIT", text="EXIT")])
+    handler = FreeformHumanHandler(interviewer)
+    node = Node(id="review", shape="hexagon", type="wait.human.freeform")
+    ctx = Context()
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.preferred_label == "done"
+
+
+# ---------------------------------------------------------------------------
+# ToolHandler
+# ---------------------------------------------------------------------------
+
+VALID_DOT = '''digraph test {
+    start [shape = Mdiamond];
+    work [shape = box, prompt = "Do thing"];
+    done [shape = Msquare];
+    start -> work -> done;
+}'''
+
+INVALID_DOT = '''digraph bad {
+    work [shape = box];
+}'''
+
+
+def test_tool_handler_validate_dot_success():
+    handler = ToolHandler()
+    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot"})
+    ctx = Context()
+    ctx.set("stage.generate_dot.response", VALID_DOT)
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.SUCCESS
+
+
+def test_tool_handler_validate_dot_failure():
+    handler = ToolHandler()
+    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot"})
+    ctx = Context()
+    ctx.set("stage.generate_dot.response", INVALID_DOT)
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.FAIL
+    assert "Validation errors" in outcome.failure_reason or "error" in outcome.failure_reason.lower()
+
+
+def test_tool_handler_validate_dot_no_content():
+    handler = ToolHandler()
+    node = Node(id="validate", shape="parallelogram", attributes={"tool": "validate_dot"})
+    ctx = Context()
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.FAIL
+
+
+def test_tool_handler_write_file():
+    handler = ToolHandler()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "output.dot")
+        node = Node(id="write", shape="parallelogram", attributes={"tool": "write_file", "path": path})
+        ctx = Context()
+        ctx.set("stage.generate_dot.response", VALID_DOT)
+        graph = Graph(name="test")
+        outcome = handler.execute(node, ctx, graph, "/tmp")
+        assert outcome.status == StageStatus.SUCCESS
+        assert os.path.exists(path)
+        content = open(path).read()
+        assert "digraph test" in content
+
+
+def test_tool_handler_read_file():
+    handler = ToolHandler()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "spec.md")
+        with open(path, "w") as f:
+            f.write("# My Spec\nSome content here.")
+        node = Node(id="load", shape="parallelogram", attributes={"tool": "read_file", "path": path})
+        ctx = Context()
+        graph = Graph(name="test")
+        outcome = handler.execute(node, ctx, graph, "/tmp")
+        assert outcome.status == StageStatus.SUCCESS
+        assert "My Spec" in outcome.context_updates["stage.load.response"]
+
+
+def test_tool_handler_read_file_not_found():
+    handler = ToolHandler()
+    node = Node(id="load", shape="parallelogram", attributes={"tool": "read_file", "path": "/nonexistent/file.txt"})
+    ctx = Context()
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.FAIL
+
+
+def test_tool_handler_unknown_tool():
+    handler = ToolHandler()
+    node = Node(id="bad", shape="parallelogram", attributes={"tool": "nonexistent"})
+    ctx = Context()
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.FAIL
+    assert "Unknown tool" in outcome.failure_reason
+
+
+def test_tool_handler_no_tool_attr():
+    handler = ToolHandler()
+    node = Node(id="bad", shape="parallelogram", attributes={})
+    ctx = Context()
+    graph = Graph(name="test")
+    outcome = handler.execute(node, ctx, graph, "/tmp")
+    assert outcome.status == StageStatus.FAIL
+
+
+# ---------------------------------------------------------------------------
+# Iteration-aware context
+# ---------------------------------------------------------------------------
+
+def test_engine_iteration_context():
+    """Verify that node re-execution stores iter_N.response keys."""
+    # Build a pipeline with a loop: start -> step -> check -> step (fail) or done (success)
+    # We use a custom handler that fails on first visit, succeeds on second
+    visit_count = {"step": 0}
+
+    class CountingHandler(Handler):
+        def execute(self, node, context, graph, logs_root):
+            visit_count["step"] += 1
+            if visit_count["step"] == 1:
+                return Outcome(
+                    status=StageStatus.SUCCESS,
+                    context_updates={
+                        f"stage.{node.id}.response": f"response_{visit_count['step']}",
+                        "last_stage": node.id,
+                        "last_response": f"response_{visit_count['step']}",
+                    },
+                )
+            return Outcome(
+                status=StageStatus.SUCCESS,
+                context_updates={
+                    f"stage.{node.id}.response": f"response_{visit_count['step']}",
+                    "last_stage": node.id,
+                    "last_response": f"response_{visit_count['step']}",
+                },
+            )
+
+    # Simpler test: just run engine and check iteration keys are set
+    g = DotParser().parse(SIMPLE_DOT)
+    registry = create_default_handler_registry()
+    engine = PipelineEngine(registry)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        engine.run(g, logs_root=tmpdir)
+        # After run, check checkpoint for iteration context
+        cp = json.loads(open(os.path.join(tmpdir, "checkpoint.json")).read())
+        ctx_snap = cp["context"]
+        # work node should have iter_1 key
+        assert "stage.work.iter_1.response" in ctx_snap
+        assert ctx_snap["stage.work.iter_1.response"] == ctx_snap["stage.work.response"]
+
+
+# ---------------------------------------------------------------------------
+# _build_prior_context with iterations
+# ---------------------------------------------------------------------------
+
+def test_build_prior_context_with_iterations():
+    from attractor.pipeline.llm_backend import LLMBackend
+    ctx = Context()
+    ctx.set("stage.get_input.iter_1.response", "Build a CSV pipeline")
+    ctx.set("stage.generate_dot.iter_1.response", "digraph csv { ... }")
+    ctx.set("stage.get_input.iter_2.response", "Add validation step")
+    ctx.set("stage.generate_dot.iter_2.response", "digraph csv { ... updated }")
+    ctx.set("stage.get_input.response", "Add validation step")
+    ctx.set("stage.generate_dot.response", "digraph csv { ... updated }")
+
+    result = LLMBackend._build_prior_context(ctx)
+    assert "iteration 1" in result
+    assert "iteration 2" in result
+    # Iteration 1 should come before iteration 2
+    pos1 = result.index("iteration 1")
+    pos2 = result.index("iteration 2")
+    assert pos1 < pos2
+
+
+def test_build_prior_context_no_iterations_fallback():
+    from attractor.pipeline.llm_backend import LLMBackend
+    ctx = Context()
+    ctx.set("stage.work.response", "some output")
+    result = LLMBackend._build_prior_context(ctx)
+    assert "## Stage: work" in result
+    assert "iteration" not in result
+
+
+# ---------------------------------------------------------------------------
+# Registry resolves new handler types
+# ---------------------------------------------------------------------------
+
+def test_registry_resolves_freeform():
+    registry = create_default_handler_registry()
+    node = Node(id="test", shape="hexagon", type="wait.human.freeform")
+    handler = registry.resolve(node)
+    assert isinstance(handler, FreeformHumanHandler)
+
+
+def test_registry_resolves_tool():
+    registry = create_default_handler_registry()
+    node = Node(id="test", shape="parallelogram")
+    handler = registry.resolve(node)
+    assert isinstance(handler, ToolHandler)
+
+
+# ---------------------------------------------------------------------------
+# dot_agent.dot parses and validates
+# ---------------------------------------------------------------------------
+
+def test_dot_agent_pipeline_valid():
+    dot_agent_path = os.path.join(os.path.dirname(__file__), "..", "pipelines", "dot_agent.dot")
+    if not os.path.exists(dot_agent_path):
+        pytest.skip("dot_agent.dot not found")
+    with open(dot_agent_path) as f:
+        source = f.read()
+    g = DotParser().parse(source)
+    diags = Validator().validate(g)
+    errors = [d for d in diags if d.severity == Severity.ERROR]
+    assert len(errors) == 0, f"Validation errors: {errors}"

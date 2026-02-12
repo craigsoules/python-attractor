@@ -35,6 +35,7 @@ class PipelineEngine:
         completed: list[str] = []
         node_outcomes: dict[str, Outcome] = {}
         node_retries: dict[str, int] = {}
+        node_visits: dict[str, int] = {}
 
         current = self._find_start(graph)
         if not current:
@@ -66,6 +67,14 @@ class PipelineEngine:
             context.set("outcome", outcome.status.value)
             if outcome.preferred_label:
                 context.set("preferred_label", outcome.preferred_label)
+
+            # Track iteration-indexed responses for loop awareness
+            visit = node_visits.get(node.id, 0) + 1
+            node_visits[node.id] = visit
+            response_key = f"stage.{node.id}.response"
+            response_val = context.get(response_key)
+            if response_val is not None:
+                context.set(f"stage.{node.id}.iter_{visit}.response", response_val)
 
             # Checkpoint
             self._checkpoint(logs_root, context, current, completed, node_retries)
